@@ -202,12 +202,25 @@ function register_audit_page() {
 	if ( ! mcp_is_administrator() ) {
 		return;
 	}
-	add_management_page(
+	$screen = add_management_page(
 		'MCP Connector',
 		'MCP Connector',
 		'manage_options',
 		'mcp-connector',
 		__NAMESPACE__ . '\\render_audit_page'
+	);
+	if ( $screen ) {
+		add_action( 'load-' . $screen, __NAMESPACE__ . '\\enqueue_audit_page_script' );
+	}
+}
+
+function enqueue_audit_page_script() {
+	wp_enqueue_script(
+		'mcp-connector-copy-endpoint',
+		plugins_url( 'client/copy-endpoint.js', dirname( __DIR__ ) . '/mcp-connector.php' ),
+		array(),
+		VERSION,
+		true
 	);
 }
 
@@ -241,14 +254,26 @@ function render_audit_page() {
 	$rows  = $wpdb->get_results(
 		$wpdb->prepare( "SELECT * FROM $table ORDER BY id DESC LIMIT %d OFFSET %d", $size, ( $page - 1 ) * $size )
 	);
+	$environment = wp_get_environment_type();
 	?>
 	<div class="wrap">
 		<h1>MCP Connector</h1>
-		<p><strong><?php esc_html_e( 'Environment', 'mcp-connector' ); ?></strong> <?php echo esc_html( wp_get_environment_type() ); ?></p>
+		<p><strong><?php esc_html_e( 'Environment', 'mcp-connector' ); ?></strong> <?php echo esc_html( $environment ); ?></p>
 		<h2><?php esc_html_e( 'MCP endpoint', 'mcp-connector' ); ?></h2>
-		<pre><?php echo esc_html( rest_url( REST_NAMESPACE . '/mcp' ) ); ?></pre>
-		<?php render_mcp_credential_form(); ?>
-		<?php render_project_setup(); ?>
+		<pre id="mcp-connector-endpoint"><?php echo esc_html( rest_url( REST_NAMESPACE . '/mcp' ) ); ?></pre>
+		<p>
+			<button type="button" class="button" id="mcp-connector-copy-endpoint" hidden
+				data-copied="<?php esc_attr_e( 'Endpoint copied.', 'mcp-connector' ); ?>"
+				data-copy-error="<?php esc_attr_e( 'Copy failed. Select and copy the endpoint above.', 'mcp-connector' ); ?>">
+				<?php esc_html_e( 'Copy endpoint', 'mcp-connector' ); ?>
+			</button>
+			<span id="mcp-connector-copy-status" role="status"></span>
+		</p>
+		<?php if ( 'development' === $environment ) : ?>
+			<?php render_project_setup(); ?>
+		<?php else : ?>
+			<?php render_mcp_credential_form(); ?>
+		<?php endif; ?>
 		<h2><?php esc_html_e( 'Change history', 'mcp-connector' ); ?></h2>
 		<table class="widefat striped">
 			<thead><tr>

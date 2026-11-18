@@ -41,20 +41,30 @@ composer config repositories.justdev-mcp-connector vcs https://github.com/justDe
    define( 'WP_ENVIRONMENT_TYPE', 'staging' );
    ```
 
-3. In **Tools → MCP Connector**, enter the WordPress username and select **Create MCP Application Password**. Copy the connection details into your private local profile. Use a separate profile and password for each environment.
-4. For remote staging or production, use the HTTPS endpoint from the profile and make sure it is reachable from the machine running the agent. The password inherits the WordPress user's permissions and works only on the MCP endpoint in the environment where it was issued, while the connector is active.
+3. In **Tools → MCP Connector**, use **Development project setup** on a development site. In other environments, enter the WordPress username and select **Create MCP Application Password**, then copy the connection details into your private local profile. Use a separate profile for each environment.
+4. For remote staging or production, use the HTTPS endpoint from the profile and make sure it is reachable from the machine running the agent. The password inherits the WordPress user's permissions and works only on the MCP endpoint, while the connector is active.
 
 Each MCP request sends `X-WP-MCP-Environment`. WordPress responds with HTTP 409 when the header and environment differ. HTTP is accepted for `local` only on loopback. The MCP request body limit is 12 MiB, subject to smaller limits set by PHP or the web server.
 
+### Portable passwords for database migrations
+
+MCP Application Passwords are portable by default. Install a connector version that supports portable passwords on all participating sites. Existing passwords issued by the connector also work across environments after updating. Use the same WordPress username and Application Password in each local profile, with separate MCP endpoints and environment values. The connector still checks that each request targets the environment in its profile.
+
+Issue the portable password on the source database before the next copy. The migration must copy the WordPress user and their Application Password metadata. Each site can retain its own WordPress authentication keys and salts. A database backup from before issuance lacks the password record. To revoke the password across all sites, revoke it in each database or propagate the revocation through the next database copy.
+
 ## Development Project Setup
 
-With `WP_ENVIRONMENT_TYPE` set to `development`, open **Tools → MCP Connector → Project connection check and setup**. The page checks the project files and offers **Set up project** when configuration is missing.
+With `WP_ENVIRONMENT_TYPE` set to `development`, open **Tools → MCP Connector → Development project setup**. Choose **Set up Codex** for `.codex/config.toml` or **Set up Claude Code** for `.mcp.json`. Each button checks its own file and ignore rules.
 
-The button adds the project server to `.codex/config.toml` and `.mcp.json`, then uses a private profile in `.wp-mcp/`. It reuses an existing development profile for this site or issues a WordPress Application Password for the administrator running setup. Revoke passwords issued by MCP Connector before deactivating it. Passwords created directly in the standard WordPress user profile or by earlier versions without environment scoping retain their existing WordPress scope.
+Either setup button prepares `.wp-mcp/`, adds its wildcard `.gitignore` and an Apache deny rule if missing, and ignores both client configuration files at the project root. Project setup runs only when a button is pressed.
 
-New credentials are stored in `.wp-mcp/profiles.php` with private file permissions and a PHP guard. Setup adds `/.wp-mcp/` to `.gitignore` and preserves existing server entries with the same name. If a legacy `.wp-mcp/profiles.json` was stored inside the web root, revoke the passwords in that file and move it outside the web root. Ensure existing client configurations use the new guarded profile when rotating those credentials.
+Each button adds the server to the selected client's file. Both clients share a private profile in `.wp-mcp/`. Setup reuses an existing development profile for this site or issues a WordPress Application Password for the administrator running setup. Revoke passwords issued by MCP Connector before deactivating it. Passwords created directly in the standard WordPress user profile or by earlier versions without environment scoping retain their existing WordPress scope.
 
-WordPress needs write access to the shared project checkout. Setup detects a Git or DDEV root above WordPress. If needed, set `WP_MCP_PROJECT_ROOT` in `wp-config.php` to the project path as seen by WordPress. Client configurations use relative paths, including when WordPress runs in DDEV.
+Development setup writes `.wp-mcp/profiles.json` with private file permissions when the directory is outside the web root. For a directory inside the web root, block all HTTP access to `.wp-mcp/` at the web server and verify the denial before setting `WP_MCP_JSON_PROFILE_WEB_PROTECTED` to `true` in `wp-config.php` or `1` in the environment. Otherwise setup writes `.wp-mcp/profiles.php` with a PHP guard. Existing valid profiles are reused.
+
+The root `.gitignore` rules cover `.codex/config.toml`, `.mcp.json`, and `.wp-mcp/`. Existing Git-tracked files remain tracked. Setup preserves existing server entries with the same name.
+
+WordPress needs write access to the shared project checkout. Setup looks for a Git or DDEV root above WordPress and can use the WordPress directory for a standard installation. If needed, set `WP_MCP_PROJECT_ROOT` in `wp-config.php` to the project path as seen by WordPress. Client configurations use relative paths, including when WordPress runs in DDEV.
 
 Open the project root in Codex or Claude Code with Node.js available. Trust the project in Codex and approve the server if prompted by Claude Code. For a DDEV certificate, use a Node version that supports `NODE_USE_SYSTEM_CA` or supply the development CA through `NODE_EXTRA_CA_CERTS`. In a new chat, call `wordpress_site_info` to verify the environment.
 
@@ -101,11 +111,14 @@ For the Node.js bridge, create a private profiles file and set its permissions t
             "endpoint": "https://example.com/wp-json/mcp-connector/v1/mcp",
             "environment": "production",
             "username": "agent-production",
-            "applicationPassword": "<production application password>"
+            "applicationPassword": "<production application password>",
+            "disabled": true
         }
     }
 }
 ```
+
+The optional boolean `disabled` defaults to `false`. With `disabled: true`, the bridge exits before connecting if that profile is selected.
 
 The bundled plugins use `defaultProfile`. For multiple simultaneous connections, register the bridge under distinct server names and pass a profile name after the script path. Restart the client after editing a profile. `WP_MCP_CONFIG` can point the bridge to a different private profiles file.
 

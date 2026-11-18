@@ -7,9 +7,17 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 const PROJECT_PROFILE_GUARD = "<?php exit; __halt_compiler();\n";
-const PROJECT_PROFILE_FILE = '.wp-mcp/profiles.php';
-const PROJECT_LEGACY_PROFILE_FILE = '.wp-mcp/profiles.json';
+const PROJECT_PHP_PROFILE_FILE = '.wp-mcp/profiles.php';
+const PROJECT_JSON_PROFILE_FILE = '.wp-mcp/profiles.json';
 const PROJECT_IGNORE_RULE = '/.wp-mcp/';
+const PROJECT_PROFILE_IGNORE_FILE = '.wp-mcp/.gitignore';
+const PROJECT_PROFILE_ACCESS_FILE = '.wp-mcp/.htaccess';
+const PROJECT_CODEX_CONFIG = '.codex/config.toml';
+const PROJECT_CLAUDE_CONFIG = '.mcp.json';
+const PROJECT_CLIENT_CONFIGS = array(
+	'codex'  => PROJECT_CODEX_CONFIG,
+	'claude' => PROJECT_CLAUDE_CONFIG,
+);
 
 function project_setup_bridge() {
 	$plugin = plugin_basename( dirname( __DIR__ ) . '/mcp-connector.php' );
@@ -26,13 +34,20 @@ function project_setup_root() {
 	}
 
 	$bridge = project_setup_bridge();
-	$directory = realpath( ABSPATH );
+	$wordpress_root = realpath( ABSPATH );
+	$directory = $wordpress_root;
 	while ( $directory && dirname( $directory ) !== $directory ) {
 		$root = untrailingslashit( wp_normalize_path( $directory ) );
 		if ( 0 === strpos( $bridge, $root . '/' ) && ( file_exists( $root . '/.git' ) || is_file( $root . '/.ddev/config.yaml' ) ) ) {
 			return $root;
 		}
 		$directory = dirname( $directory );
+	}
+	if ( $wordpress_root ) {
+		$root = untrailingslashit( wp_normalize_path( $wordpress_root ) );
+		if ( 0 === strpos( $bridge, $root . '/' ) ) {
+			return $root;
+		}
 	}
 	throw new \RuntimeException( 'The project root could not be detected. Set WP_MCP_PROJECT_ROOT in wp-config.php.' );
 }
@@ -63,23 +78,31 @@ function project_setup_read( $root, $relative ) {
 	return $contents;
 }
 
-function project_setup_profile( $root, $endpoint ) {
-	$legacy = project_setup_path( $root, PROJECT_LEGACY_PROFILE_FILE );
-	if ( is_file( $legacy ) ) {
-		$document_roots = array( ABSPATH, $_SERVER['DOCUMENT_ROOT'] ?? '' );
-		foreach ( $document_roots as $document_root ) {
-			$public = '' !== $document_root ? realpath( $document_root ) : false;
-			if ( $public && 0 === strpos( $legacy, trailingslashit( wp_normalize_path( $public ) ) ) ) {
-				throw new \RuntimeException( 'A legacy JSON profile is inside the web root. Revoke its Application Password and move the file outside the web root before running setup.' );
-			}
+function project_setup_json_allowed( $root ) {
+	if ( defined( 'WP_MCP_JSON_PROFILE_WEB_PROTECTED' ) ? true === WP_MCP_JSON_PROFILE_WEB_PROTECTED : '1' === getenv( 'WP_MCP_JSON_PROFILE_WEB_PROTECTED' ) ) {
+		return true;
+	}
+
+	$path = project_setup_path( $root, PROJECT_JSON_PROFILE_FILE );
+	foreach ( array( ABSPATH, $_SERVER['DOCUMENT_ROOT'] ?? '' ) as $document_root ) {
+		$public = '' !== $document_root ? realpath( $document_root ) : false;
+		if ( $public && 0 === strpos( $path, trailingslashit( wp_normalize_path( $public ) ) ) ) {
+			return false;
 		}
 	}
-	foreach ( array( PROJECT_PROFILE_FILE, PROJECT_LEGACY_PROFILE_FILE ) as $relative ) {
+	return true;
+}
+
+function project_setup_profile( $root, $endpoint, $json_allowed ) {
+	if ( ! $json_allowed && is_file( project_setup_path( $root, PROJECT_JSON_PROFILE_FILE ) ) ) {
+		throw new \RuntimeException( 'The JSON profile is inside the web root. Block HTTP access to .wp-mcp and confirm protection before using it, or move the profile outside the web root.' );
+	}
+	foreach ( array( PROJECT_PHP_PROFILE_FILE, PROJECT_JSON_PROFILE_FILE ) as $relative ) {
 		$contents = project_setup_read( $root, $relative );
 		if ( null === $contents ) {
 			continue;
 		}
-		if ( PROJECT_PROFILE_FILE === $relative ) {
+		if ( PROJECT_PHP_PROFILE_FILE === $relative ) {
 			if ( 0 !== strpos( $contents, PROJECT_PROFILE_GUARD ) ) {
 				throw new \RuntimeException( 'The existing development profiles file has an invalid PHP guard.' );
 			}
@@ -96,10 +119,13 @@ function project_setup_profile( $root, $endpoint ) {
 		) {
 			throw new \RuntimeException( 'The existing default profile must use this site’s MCP endpoint and the development environment.' );
 		}
+		if ( array_key_exists( 'disabled', $profile ) && ! is_bool( $profile['disabled'] ) ) {
+			throw new \RuntimeException( 'The disabled property of the default profile must be true or false.' );
+		}
 		if ( 'Windows' !== PHP_OS_FAMILY && ( fileperms( project_setup_path( $root, $relative ) ) & 0077 ) ) {
 			throw new \RuntimeException( 'The existing profiles file must use private permissions (chmod 600).' );
 		}
-		return $relative;
+		return array( 'path' => $relative, 'disabled' => $profile['disabled'] ?? false );
 	}
 	return null;
 }
@@ -160,26 +186,62 @@ function project_setup_plan( $root ) {
 		throw new \RuntimeException( 'Install MCP Connector inside the shared development project first.' );
 	}
 
-	$profile = project_setup_profile( $root, $endpoint );
-	$server = array(
-		'command' => 'node',
-		'args'    => array( substr( $bridge, strlen( $root ) + 1 ) ),
-		'env'     => array(
-			'WP_MCP_CONFIG'      => $profile ?? PROJECT_PROFILE_FILE,
-			'NODE_USE_SYSTEM_CA' => '1',
-		),
-	);
-	$ignore = project_setup_read( $root, '.gitignore' ) ?? '';
-	$changes = array(
-		'.gitignore'         => in_array( PROJECT_IGNORE_RULE, preg_split( '/\r?\n/', $ignore ), true ) ?
-			null : rtrim( $ignore ) . ( '' === $ignore ? '' : "\n" ) . PROJECT_IGNORE_RULE . "\n",
-		'.codex/config.toml' => project_setup_codex_entry( project_setup_read( $root, '.codex/config.toml' ), $name, $server ),
-		'.mcp.json'          => project_setup_claude_entry( project_setup_read( $root, '.mcp.json' ), $name, $server ),
-	);
+	$json_allowed   = project_setup_json_allowed( $root );
+	$existing       = project_setup_profile( $root, $endpoint, $json_allowed );
+	$profile        = $existing['path'] ?? null;
+	$profile_path   = $profile ?? ( $json_allowed ? PROJECT_JSON_PROFILE_FILE : PROJECT_PHP_PROFILE_FILE );
 	if ( ! $profile && ! wp_is_application_passwords_available_for_user( wp_get_current_user() ) ) {
 		throw new \RuntimeException( 'Application Passwords must be available for your WordPress user.' );
 	}
-	return array( 'name' => $name, 'endpoint' => $endpoint, 'profile' => $profile, 'changes' => array_filter( $changes ) );
+	return array(
+		'name'             => $name,
+		'endpoint'         => $endpoint,
+		'profile'          => $profile,
+		'profile_path'     => $profile_path,
+		'profile_disabled' => $existing['disabled'] ?? false,
+		'preparation'      => project_setup_preparation_plan( $root ),
+		'server'           => array(
+			'command' => 'node',
+			'args'    => array( substr( $bridge, strlen( $root ) + 1 ) ),
+			'env'     => array(
+				'WP_MCP_CONFIG'      => $profile_path,
+				'NODE_USE_SYSTEM_CA' => '1',
+			),
+		),
+	);
+}
+
+function project_setup_client_plan( $root, $client, array $plan ) {
+	$path     = PROJECT_CLIENT_CONFIGS[ $client ];
+	$contents = project_setup_read( $root, $path );
+	$update   = 'codex' === $client
+		? project_setup_codex_entry( $contents, $plan['name'], $plan['server'] )
+		: project_setup_claude_entry( $contents, $plan['name'], $plan['server'] );
+	return array(
+		'path'     => $path,
+		'exists'   => null !== $contents,
+		'contents' => $update,
+	);
+}
+
+function project_setup_ignore_update( $contents, array $rules ) {
+	$missing = array_diff( $rules, preg_split( '/\r?\n/', $contents ) );
+	return $missing ? rtrim( $contents ) . ( '' === $contents ? '' : "\n" ) . implode( "\n", $missing ) . "\n" : null;
+}
+
+function project_setup_preparation_plan( $root ) {
+	$ignore = project_setup_read( $root, '.gitignore' ) ?? '';
+	$profile_ignore = project_setup_read( $root, PROJECT_PROFILE_IGNORE_FILE ) ?? '';
+	$access = project_setup_read( $root, PROJECT_PROFILE_ACCESS_FILE );
+	$rules = array( PROJECT_IGNORE_RULE );
+	foreach ( PROJECT_CLIENT_CONFIGS as $path ) {
+		$rules[] = '/' . $path;
+	}
+	return array_filter( array(
+		'.gitignore'                => project_setup_ignore_update( $ignore, $rules ),
+		PROJECT_PROFILE_IGNORE_FILE => project_setup_ignore_update( $profile_ignore, array( '*' ) ),
+		PROJECT_PROFILE_ACCESS_FILE => null === $access ? "Require all denied\n" : null,
+	) );
 }
 
 function project_setup_write( $root, $relative, $contents, $mode ) {
@@ -188,7 +250,7 @@ function project_setup_write( $root, $relative, $contents, $mode ) {
 		throw new \RuntimeException( 'Cannot create the directory for ' . $relative );
 	}
 	// Keep credential temporary files under a PHP extension, too.
-	$suffix = PROJECT_PROFILE_FILE === $relative ? '.php' : '.tmp';
+	$suffix = PROJECT_PHP_PROFILE_FILE === $relative ? '.php' : '.tmp';
 	$temp = dirname( $file ) . '/.mcp-setup-' . wp_generate_uuid4() . $suffix;
 	$handle = @fopen( $temp, 'xb' );
 	if ( false === $handle ) {
@@ -205,9 +267,9 @@ function project_setup_write( $root, $relative, $contents, $mode ) {
 	}
 }
 
-function project_setup_create_profile( $root, $endpoint ) {
+function project_setup_create_profile( $root, $endpoint, $relative ) {
 	$user = wp_get_current_user();
-	$result = create_mcp_application_password( $user, 'MCP Connector (development)' );
+	$result = create_mcp_application_password( $user, 'MCP Connector (project setup)' );
 	if ( is_wp_error( $result ) ) {
 		throw new \RuntimeException( $result->get_error_message() );
 	}
@@ -224,28 +286,15 @@ function project_setup_create_profile( $root, $endpoint ) {
 		),
 	);
 	try {
-		project_setup_write(
-			$root,
-			PROJECT_PROFILE_FILE,
-			PROJECT_PROFILE_GUARD . wp_json_encode( $profiles, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n",
-			0600
-		);
+		$guard = PROJECT_PHP_PROFILE_FILE === $relative ? PROJECT_PROFILE_GUARD : '';
+		project_setup_write( $root, $relative, $guard . wp_json_encode( $profiles, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n", 0600 );
 	} catch ( \Throwable $error ) {
 		\WP_Application_Passwords::delete_application_password( $user->ID, $credential['uuid'] );
 		throw $error;
 	}
 }
 
-function project_setup_apply() {
-	if ( 'development' !== wp_get_environment_type() || ! mcp_is_administrator() || ! current_user_can( 'manage_options' ) ) {
-		throw new \RuntimeException( 'Project setup is available to administrators in development.' );
-	}
-	$root = project_setup_root();
-	// Validate the existing documents before creating any setup files.
-	$plan = project_setup_plan( $root );
-	if ( $plan['profile'] && ! $plan['changes'] ) {
-		return;
-	}
+function project_setup_lock( $root ) {
 	$lock_file = project_setup_path( $root, '.wp-mcp/setup.lock' );
 	if ( ! wp_mkdir_p( dirname( $lock_file ) ) ) {
 		throw new \RuntimeException( 'Cannot create the private project profile directory.' );
@@ -254,23 +303,43 @@ function project_setup_apply() {
 	if ( false === $lock ) {
 		throw new \RuntimeException( 'Cannot lock the project setup directory.' );
 	}
+	if ( ! flock( $lock, LOCK_EX ) ) {
+		fclose( $lock );
+		throw new \RuntimeException( 'Cannot lock the project setup directory.' );
+	}
+	return $lock;
+}
+
+function project_setup_write_files( $root, array $files ) {
+	foreach ( $files as $relative => $contents ) {
+		$path = project_setup_path( $root, $relative );
+		project_setup_write( $root, $relative, $contents, is_file( $path ) ? fileperms( $path ) & 0777 : 0644 );
+	}
+}
+
+function project_setup_apply( $client ) {
+	if ( 'development' !== wp_get_environment_type() || ! mcp_is_administrator() || ! current_user_can( 'manage_options' ) ) {
+		throw new \RuntimeException( 'Project setup is available to administrators in development.' );
+	}
+	if ( ! is_string( $client ) || ! isset( PROJECT_CLIENT_CONFIGS[ $client ] ) ) {
+		throw new \RuntimeException( 'Select Codex or Claude Code.' );
+	}
+	$root = project_setup_root();
+	$plan = project_setup_plan( $root );
+	$config = project_setup_client_plan( $root, $client, $plan );
+	if ( $plan['profile'] && ! $plan['preparation'] && null === $config['contents'] ) {
+		return;
+	}
+	$lock = project_setup_lock( $root );
 	try {
-		if ( ! flock( $lock, LOCK_EX ) ) {
-			throw new \RuntimeException( 'Cannot lock the project setup directory.' );
-		}
 		$plan = project_setup_plan( $root );
-		if ( isset( $plan['changes']['.gitignore'] ) ) {
-			$path = project_setup_path( $root, '.gitignore' );
-			project_setup_write( $root, '.gitignore', $plan['changes']['.gitignore'], is_file( $path ) ? fileperms( $path ) & 0777 : 0644 );
-		}
+		$config = project_setup_client_plan( $root, $client, $plan );
+		project_setup_write_files( $root, $plan['preparation'] );
 		if ( ! $plan['profile'] ) {
-			project_setup_create_profile( $root, $plan['endpoint'] );
+			project_setup_create_profile( $root, $plan['endpoint'], $plan['profile_path'] );
 		}
-		foreach ( array( '.codex/config.toml', '.mcp.json' ) as $relative ) {
-			if ( isset( $plan['changes'][ $relative ] ) ) {
-				$path = project_setup_path( $root, $relative );
-				project_setup_write( $root, $relative, $plan['changes'][ $relative ], is_file( $path ) ? fileperms( $path ) & 0777 : 0644 );
-			}
+		if ( null !== $config['contents'] ) {
+			project_setup_write_files( $root, array( $config['path'] => $config['contents'] ) );
 		}
 	} finally {
 		fclose( $lock );
@@ -285,9 +354,13 @@ function handle_project_setup() {
 		wp_die( esc_html__( 'Use the project setup form.', 'mcp-connector' ), '', array( 'response' => 405 ) );
 	}
 	check_admin_referer( 'mcp_connector_project_setup' );
+	$client = $_POST['mcp_project_client'] ?? null;
+	if ( ! is_string( $client ) || ! isset( PROJECT_CLIENT_CONFIGS[ $client ] ) ) {
+		wp_die( esc_html__( 'Select Codex or Claude Code.', 'mcp-connector' ), '', array( 'response' => 400 ) );
+	}
 
 	try {
-		project_setup_apply();
+		project_setup_apply( $client );
 	} catch ( \RuntimeException $error ) {
 		wp_die( esc_html( $error->getMessage() ), esc_html__( 'MCP Connector setup', 'mcp-connector' ), array( 'response' => 500, 'back_link' => true ) );
 	}
@@ -300,33 +373,57 @@ function render_project_setup() {
 		return;
 	}
 	?>
-	<h2><?php esc_html_e( 'Project connection check and setup', 'mcp-connector' ); ?></h2>
+	<h2><?php esc_html_e( 'Development project setup', 'mcp-connector' ); ?></h2>
 	<?php
 	try {
-		$plan = project_setup_plan( project_setup_root() );
+		$root = project_setup_root();
+		$plan = project_setup_plan( $root );
 	} catch ( \RuntimeException $error ) {
 		?>
+		<p><strong><?php esc_html_e( 'Project setup blocked', 'mcp-connector' ); ?></strong></p>
 		<p><?php echo esc_html( $error->getMessage() ); ?></p>
 		<?php
 		return;
 	}
-	if ( $plan['profile'] && ! $plan['changes'] ) {
-		?>
-		<p><strong><?php esc_html_e( 'Project configuration is ready.', 'mcp-connector' ); ?></strong> <code><?php echo esc_html( $plan['name'] ); ?></code></p>
-		<?php
-		return;
-	}
+	$labels = array(
+		'codex'  => __( 'Set up Codex', 'mcp-connector' ),
+		'claude' => __( 'Set up Claude Code', 'mcp-connector' ),
+	);
 	?>
-	<p><?php esc_html_e( 'Set up Codex and Claude Code for this development project.', 'mcp-connector' ); ?></p>
-	<ul class="ul-disc">
-		<?php foreach ( array_merge( array_keys( $plan['changes'] ), $plan['profile'] ? array() : array( PROJECT_PROFILE_FILE ) ) as $path ) : ?>
-			<li><code><?php echo esc_html( $path ); ?></code></li>
-		<?php endforeach; ?>
-	</ul>
 	<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 		<input type="hidden" name="action" value="mcp_connector_project_setup">
 		<?php wp_nonce_field( 'mcp_connector_project_setup' ); ?>
-		<?php submit_button( __( 'Set up project', 'mcp-connector' ) ); ?>
+		<?php foreach ( PROJECT_CLIENT_CONFIGS as $client => $path ) : ?>
+			<?php
+			$config = null;
+			try {
+				$config = project_setup_client_plan( $root, $client, $plan );
+				if ( $plan['profile_disabled'] ) {
+					$status = __( 'Private profile disabled', 'mcp-connector' );
+				} elseif ( ! $config['exists'] ) {
+					$status = __( 'File missing', 'mcp-connector' );
+				} elseif ( null !== $config['contents'] ) {
+					$status = __( 'MCP server entry missing', 'mcp-connector' );
+				} elseif ( $plan['preparation'] ) {
+					$status = __( 'Project protection files or rules missing', 'mcp-connector' );
+				} elseif ( ! $plan['profile'] ) {
+					$status = __( 'Private profile missing', 'mcp-connector' );
+				} else {
+					$status = __( 'Ready', 'mcp-connector' );
+				}
+			} catch ( \RuntimeException $error ) {
+				$status = $error->getMessage();
+			}
+			$enabled = $config && ( ! $plan['profile'] || $plan['preparation'] || null !== $config['contents'] );
+			?>
+			<p>
+				<button type="submit" class="button button-secondary" name="mcp_project_client" value="<?php echo esc_attr( $client ); ?>" <?php disabled( ! $enabled ); ?>>
+					<?php echo esc_html( $labels[ $client ] ); ?>
+				</button>
+				<code><?php echo esc_html( $path ); ?></code>
+				<strong><?php echo esc_html( $status ); ?></strong>
+			</p>
+		<?php endforeach; ?>
 	</form>
 	<?php
 }

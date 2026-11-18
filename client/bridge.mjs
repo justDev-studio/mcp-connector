@@ -44,6 +44,15 @@ async function loadProfile() {
         throw new Error('Select an existing WordPress profile.');
     }
     const profile = config.profiles[name];
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
+        throw new Error('The selected WordPress profile must be an object.');
+    }
+    if (Object.hasOwn(profile, 'disabled') && typeof profile.disabled !== 'boolean') {
+        throw new Error('The disabled property must be true or false.');
+    }
+    if (profile.disabled) {
+        throw new Error('The selected WordPress profile is disabled.');
+    }
     const { endpoint, environment, username, applicationPassword } = profile;
     if (
         !environments.includes(environment) ||
