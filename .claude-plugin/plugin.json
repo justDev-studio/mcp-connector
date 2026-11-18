@@ -1,0 +1,6 @@
+{
+    "name": "wordpress-mcp-connector",
+    "version": "0.1.0",
+    "description": "Connect Claude Code to an authenticated WordPress environment with an audit trail.",
+    "author": { "name": "justDev", "url": "https://justdev.org" }
+}

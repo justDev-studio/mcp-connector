@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+        "wordpress": {
+            "type": "stdio",
+            "command": "node",
+            "args": ["client/bridge.mjs"],
+            "cwd": ".",
+            "tool_timeout_sec": 125
+        }
+    }
+}

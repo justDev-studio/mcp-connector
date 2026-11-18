@@ -1,0 +1,7 @@
+.DS_Store
+/.codegraph/
+/vendor/
+/composer.lock
+/.env
+/.env.*
+/profiles.json

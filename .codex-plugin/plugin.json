@@ -1,0 +1,8 @@
+{
+    "name": "wordpress-mcp-connector",
+    "version": "0.1.0",
+    "description": "Connect Codex to an authenticated WordPress environment with an audit trail.",
+    "author": { "name": "justDev", "url": "https://justdev.org" },
+    "mcpServers": "./mcp.json",
+    "requires_local_executor": true
+}

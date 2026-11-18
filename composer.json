@@ -1,0 +1,29 @@
+{
+    "name": "justdev/mcp-connector",
+    "description": "Manage WordPress through MCP with authenticated environments and an admin audit log.",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "homepage": "https://justdev.org",
+    "authors": [
+        {
+            "name": "justDev",
+            "homepage": "https://justdev.org"
+        }
+    ],
+    "keywords": [
+        "mcp",
+        "plugin",
+        "wordpress"
+    ],
+    "require": {
+        "php": ">=7.4",
+        "composer/installers": "^2.0"
+    },
+    "extra": {
+        "installer-name": "mcp-connector"
+    },
+    "support": {
+        "source": "https://github.com/justDev-studio/mcp-connector",
+        "issues": "https://github.com/justDev-studio/mcp-connector/issues"
+    }
+}
