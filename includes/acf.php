@@ -235,6 +235,54 @@ function validate_acf_fields( $fields, array $allowed_keys, array &$seen ) {
 	return true;
 }
 
+function acf_options_page_storage( $page ) {
+	if ( empty( $page['capability'] ) || ! current_user_can( $page['capability'] ) ) {
+		return admin_error( 'The ACF Options Page is unavailable to this user.', 'mcp_admin_forbidden' );
+	}
+
+	$post_id = acf_get_valid_post_id( $page['post_id'] );
+	$storage = acf_decode_post_id( $post_id );
+	$type    = $storage['type'];
+	if ( 'option' === $type ) {
+		return $post_id;
+	}
+
+	$id   = (int) $storage['id'];
+	$caps = array( 'post' => 'edit_post', 'user' => 'edit_user', 'term' => 'edit_term', 'comment' => 'edit_comment' );
+	if ( ! isset( $caps[ $type ] ) || ! current_user_can( $caps[ $type ], $id ) ) {
+		return admin_error( 'You are not allowed to edit the Options Page storage object.', 'mcp_admin_forbidden' );
+	}
+	if ( ! mcp_is_administrator() ) {
+		$object = null;
+		if ( 'post' === $type ) {
+			$object = get_post_type_object( get_post_type( $id ) );
+		} elseif ( 'term' === $type ) {
+			$term = get_term( $id );
+			$object = $term instanceof \WP_Term ? get_taxonomy( $term->taxonomy ) : null;
+		}
+		if ( ! is_content_type( $object ) ) {
+			return admin_error( 'This Options Page storage is outside the MCP content scope.', 'mcp_admin_forbidden' );
+		}
+	}
+	return $post_id;
+}
+
+function acf_options_field_contains_credential( array $field ) {
+	if ( 'password' === ( $field['type'] ?? '' ) || credential_key( $field['name'] ?? '' ) ) {
+		return true;
+	}
+	$children = $field['sub_fields'] ?? array();
+	foreach ( $field['layouts'] ?? array() as $layout ) {
+		$children = array_merge( $children, $layout['sub_fields'] ?? array() );
+	}
+	foreach ( $children as $child ) {
+		if ( acf_options_field_contains_credential( $child ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 function acf_options_values_resource( $resource, $identifier, $operation, array $body ) {
 	if ( ! function_exists( 'acf_get_options_page' ) ) {
 		return admin_error( 'ACF PRO Options Pages are unavailable.', 'mcp_acf_unavailable' );
@@ -242,28 +290,27 @@ function acf_options_values_resource( $resource, $identifier, $operation, array 
 	if ( '' === $identifier ) {
 		$pages = array();
 		foreach ( acf_get_options_pages() ?: array() as $page ) {
-			if ( ! empty( $page['capability'] ) && current_user_can( $page['capability'] ) ) {
+			if ( ! is_wp_error( acf_options_page_storage( $page ) ) ) {
 				$pages[ $page['menu_slug'] ] = $page['page_title'];
 			}
 		}
 		return $pages;
 	}
 
-	$page = acf_get_options_page( $identifier );
-	if ( empty( $page['capability'] ) || ! current_user_can( $page['capability'] ) ) {
-		return admin_error( 'The ACF Options Page is unavailable to this user.', 'mcp_admin_forbidden' );
-	}
-	$post_id = acf_get_valid_post_id( $page['post_id'] );
-	$storage = acf_decode_post_id( $post_id );
-	$caps    = array( 'post' => 'edit_post', 'user' => 'edit_user', 'term' => 'edit_term', 'comment' => 'edit_comment' );
-	if ( 'option' !== $storage['type'] && ( ! isset( $caps[ $storage['type'] ] ) || ! current_user_can( $caps[ $storage['type'] ], (int) $storage['id'] ) ) ) {
-		return admin_error( 'You are not allowed to edit the Options Page storage object.', 'mcp_admin_forbidden' );
+	$page    = acf_get_options_page( $identifier );
+	$post_id = acf_options_page_storage( $page );
+	if ( is_wp_error( $post_id ) ) {
+		return $post_id;
 	}
 
 	$fields = array();
+	$credentials = array();
 	foreach ( acf_get_field_groups( array( 'options_page' => $identifier ) ) as $group ) {
 		foreach ( acf_get_fields( $group ) ?: array() as $field ) {
 			$fields[ $field['key'] ] = $field;
+			if ( acf_options_field_contains_credential( $field ) ) {
+				$credentials[ $field['key'] ] = true;
+			}
 		}
 	}
 
@@ -274,6 +321,9 @@ function acf_options_values_resource( $resource, $identifier, $operation, array 
 		$unknown = array_diff_key( $body['values'], $fields );
 		if ( $unknown ) {
 			return admin_error( 'Field is not assigned to this Options Page: ' . array_key_first( $unknown ) );
+		}
+		if ( ! mcp_is_administrator() && array_intersect_key( $body['values'], $credentials ) ) {
+			return admin_error( 'Updating credentials on ACF Options Pages requires a WordPress administrator.', 'mcp_admin_required' );
 		}
 		acf_reset_validation_errors();
 		foreach ( $body['values'] as $key => $value ) {
@@ -310,7 +360,7 @@ function acf_options_values_resource( $resource, $identifier, $operation, array 
 			'name'  => $field['name'],
 			'label' => $field['label'],
 			'type'  => $field['type'],
-			'value' => acf_get_value( $post_id, $field ),
+			'value' => isset( $credentials[ $key ] ) ? '[redacted]' : acf_get_value( $post_id, $field ),
 		);
 	}
 	return $values;

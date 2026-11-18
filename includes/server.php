@@ -7,6 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 const PROTOCOL_VERSIONS = array( '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05' );
+const MAX_MCP_REQUEST_BYTES = 12 * 1024 * 1024;
 
 function register_mcp_route() {
 	register_rest_route(
@@ -20,13 +21,18 @@ function register_mcp_route() {
 	);
 }
 
+function mcp_transport_allowed() {
+	$loopback = in_array( $_SERVER['REMOTE_ADDR'] ?? '', array( '127.0.0.1', '::1', '::ffff:127.0.0.1' ), true );
+	return is_ssl() || ( 'local' === wp_get_environment_type() && $loopback );
+}
+
 function authorize_mcp( \WP_REST_Request $request ) {
 	if ( $request->get_header( 'origin' ) ) {
 		return new \WP_Error( 'mcp_origin_denied', 'This endpoint accepts server clients only.', array( 'status' => 403 ) );
 	}
 
 	$environment = wp_get_environment_type();
-	if ( ! is_ssl() && 'local' !== $environment ) {
+	if ( ! mcp_transport_allowed() ) {
 		return new \WP_Error( 'mcp_https_required', 'Connect to this WordPress environment over HTTPS.', array( 'status' => 403 ) );
 	}
 
@@ -39,6 +45,15 @@ function authorize_mcp( \WP_REST_Request $request ) {
 	}
 
 	return true;
+}
+
+function limit_mcp_request_size( $result, \WP_REST_Server $server, \WP_REST_Request $request ) {
+	if ( null === $result && 'POST' === $request->get_method() &&
+		0 === strcasecmp( '/' . REST_NAMESPACE . '/mcp', untrailingslashit( $request->get_route() ) ) &&
+		( (float) ( $_SERVER['CONTENT_LENGTH'] ?? 0 ) > MAX_MCP_REQUEST_BYTES || strlen( $request->get_body() ) > MAX_MCP_REQUEST_BYTES ) ) {
+		return new \WP_Error( 'mcp_request_too_large', 'The MCP request exceeds 12 MiB.', array( 'status' => 413 ) );
+	}
+	return $result;
 }
 
 function handle_mcp( \WP_REST_Request $request ) {
@@ -87,7 +102,14 @@ function handle_mcp( \WP_REST_Request $request ) {
 			$result = (object) array();
 			break;
 		case 'tools/list':
-			$result = array( 'tools' => array_values( tool_catalog() ) );
+			$catalog = tool_catalog();
+			if ( ! mcp_is_administrator() ) {
+				$catalog = array_intersect_key( $catalog, array_flip( content_mcp_tools() ) );
+				foreach ( array( 'wordpress_admin_read', 'wordpress_admin_write' ) as $tool ) {
+					$catalog[ $tool ]['inputSchema']['properties']->resource['enum'] = content_admin_resources();
+				}
+			}
+			$result = array( 'tools' => array_values( $catalog ) );
 			break;
 		case 'tools/call':
 			if ( ! is_string( $params->name ?? null ) || ! isset( tool_catalog()[ $params->name ] ) ) {

@@ -41,14 +41,50 @@ composer config repositories.justdev-mcp-connector vcs https://github.com/justDe
    define( 'WP_ENVIRONMENT_TYPE', 'staging' );
    ```
 
-3. Create a WordPress Application Password for each client and environment under **Users → Profile**. The password inherits the capabilities of that WordPress user.
-4. Copy the endpoint from **Tools → MCP Connector**.
+3. In **Tools → MCP Connector**, enter the WordPress username and select **Create MCP Application Password**. Copy the connection details into your private local profile. Use a separate profile and password for each environment.
+4. For remote staging or production, use the HTTPS endpoint from the profile and make sure it is reachable from the machine running the agent. The password inherits the WordPress user's permissions and works only on the MCP endpoint in the environment where it was issued, while the connector is active.
 
-Each MCP request sends `X-WP-MCP-Environment`. WordPress responds with HTTP 409 when the header and environment differ. For a `local` WordPress instance, the bridge also accepts HTTP on a loopback address.
+Each MCP request sends `X-WP-MCP-Environment`. WordPress responds with HTTP 409 when the header and environment differ. HTTP is accepted for `local` only on loopback. The MCP request body limit is 12 MiB, subject to smaller limits set by PHP or the web server.
 
-## Client Profiles
+## Development Project Setup
 
-Create `~/.config/wp-mcp/profiles.json` outside the project and web root. Set its permissions with `chmod 600 ~/.config/wp-mcp/profiles.json`.
+With `WP_ENVIRONMENT_TYPE` set to `development`, open **Tools → MCP Connector → Project connection check and setup**. The page checks the project files and offers **Set up project** when configuration is missing.
+
+The button adds the project server to `.codex/config.toml` and `.mcp.json`, then uses a private profile in `.wp-mcp/`. It reuses an existing development profile for this site or issues a WordPress Application Password for the administrator running setup. Revoke passwords issued by MCP Connector before deactivating it. Passwords created directly in the standard WordPress user profile or by earlier versions without environment scoping retain their existing WordPress scope.
+
+New credentials are stored in `.wp-mcp/profiles.php` with private file permissions and a PHP guard. Setup adds `/.wp-mcp/` to `.gitignore` and preserves existing server entries with the same name. If a legacy `.wp-mcp/profiles.json` was stored inside the web root, revoke the passwords in that file and move it outside the web root. Ensure existing client configurations use the new guarded profile when rotating those credentials.
+
+WordPress needs write access to the shared project checkout. Setup detects a Git or DDEV root above WordPress. If needed, set `WP_MCP_PROJECT_ROOT` in `wp-config.php` to the project path as seen by WordPress. Client configurations use relative paths, including when WordPress runs in DDEV.
+
+Open the project root in Codex or Claude Code with Node.js available. Trust the project in Codex and approve the server if prompted by Claude Code. For a DDEV certificate, use a Node version that supports `NODE_USE_SYSTEM_CA` or supply the development CA through `NODE_EXTRA_CA_CERTS`. In a new chat, call `wordpress_site_info` to verify the environment.
+
+## Codex Project Configuration
+
+Add the WordPress MCP server to `.codex/config.toml` in the root of a trusted Codex project. Codex can connect to WordPress directly over Streamable HTTP.
+
+```toml
+[mcp_servers.wordpress-staging]
+url = "https://staging.example.com/wp-json/mcp-connector/v1/mcp"
+http_headers = { "X-WP-MCP-Environment" = "staging" }
+env_http_headers = { Authorization = "WP_MCP_STAGING_AUTHORIZATION" }
+```
+
+Use the endpoint shown under **Tools → MCP Connector**. Set `WP_MCP_STAGING_AUTHORIZATION` in the environment of the Codex process to `Basic <base64 of username:application-password>`. The encoded value is a credential. Keep it out of `.codex/config.toml` and version control. Add a separate server table and environment variable for each WordPress environment. In a new Codex chat, call `wordpress_site_info` to verify the site and environment.
+
+Direct HTTP uses `base64` uploads. For `file_path` uploads, use the Node.js bridge. The bridge can also be scoped to this project with `.codex/config.toml`.
+
+```toml
+[mcp_servers.wordpress-staging]
+command = "node"
+args = ["/absolute/path/to/mcp-connector/client/bridge.mjs", "staging"]
+env = { WP_MCP_CONFIG = "/absolute/path/to/project/.codex/wp-mcp/profiles.json" }
+```
+
+Use one transport per server name. Keep a project-local profiles file outside the public web root, ignore it in Git, and set its permissions to `600`.
+
+## Bridge Client Profiles
+
+For the Node.js bridge, create a private profiles file and set its permissions to `600`. Use `WP_MCP_CONFIG` to select a project-specific file. The bridge defaults to `~/.config/wp-mcp/profiles.json` when that variable is unset.
 
 ```json
 {
@@ -73,7 +109,7 @@ Create `~/.config/wp-mcp/profiles.json` outside the project and web root. Set it
 
 The bundled plugins use `defaultProfile`. For multiple simultaneous connections, register the bridge under distinct server names and pass a profile name after the script path. Restart the client after editing a profile. `WP_MCP_CONFIG` can point the bridge to a different private profiles file.
 
-### OpenAI Codex
+### Codex Marketplace and CLI
 
 Add the bundled plugin through a [local Codex marketplace](https://developers.openai.com/plugins/build/plugins), or register the bridge directly.
 
@@ -96,6 +132,12 @@ claude mcp add --transport stdio --scope local wordpress-staging -- node /absolu
 The endpoint supports stateless Streamable HTTP. Use HTTP Basic authentication with the WordPress username and Application Password, and set `X-WP-MCP-Environment` to the expected WordPress environment. The client must support custom HTTP headers.
 
 ## WordPress Tools
+
+### Role access
+
+WordPress administrators and multisite super admins can use the full MCP tool set, subject to WordPress and plugin capabilities. Other users can manage posts, pages, and menus within their existing permissions. The same scope covers custom post types and taxonomies that are visible in WordPress admin and use WordPress post or term REST controllers. Users can edit custom field values on those objects and on ACF Options Pages they can already access. Object-level duplication, translation links, and SEO metadata follow the permissions of the relevant content.
+
+Site and plugin settings, ACF definitions, themes, plugins, Gravity Forms, media library management, and additional REST routes require an administrator in MCP. The MCP Connector settings and change history in WordPress admin also require the administrator role.
 
 | Tool | Use |
 | --- | --- |
@@ -133,6 +175,26 @@ Gravity Forms routes appear when the plugin's REST API v2 is enabled in **Forms 
 | Read one submission | `wordpress_read` with `/gf/v2/entries/{id}` |
 
 Form updates merge the supplied top-level properties into the existing form. A supplied `fields`, `notifications`, or `confirmations` property replaces that section, so read the current form first and keep the existing entries and IDs you want to preserve. For submission lists, use `query.paging`, `query.sorting`, and `query.search`. For example, `{"paging":{"page_size":20,"current_page":1},"search":{"status":"active"}}` retrieves the first page of active submissions. Use `_field_ids` and `_labels` to select which fields to return.
+
+## Plugin integrations
+
+Use `wordpress_site_info` to discover the resources available on the current site. Read the resource with `wordpress_admin_read` before updating it with `wordpress_admin_write`. Plugin-specific capabilities still apply. The MCP audit log records changes and omits credential values.
+
+| Plugin | MCP resources and identifiers |
+| --- | --- |
+| WPML | `wpml_languages` (site) reads and sets active and default languages. `wpml_content` (`post:42` or `term:15`) reads translation groups and assigns or links existing objects with language and `translation_of`. Set language on `wordpress_read` to select a language for REST reads. |
+| WPML String Translation | `wpml_strings` reads and updates a registered string by numeric ID. Use `query.context`, `query.name`, and `query.source` to find its ID. Updates accept language and value. |
+| Complianz | `complianz` (site) reads the available settings and wizard fields and saves their values through the plugin's sanitizers and save hooks. `complianz_banner` lists and updates settings on existing banners. |
+| Media Cloud | `media_cloud` (site) manages the supported S3 and offload settings, including media types, URL rewriting, and write-only credentials. |
+| Yoast Duplicate Post | `duplicate_post_settings` (site) manages copying options. `duplicate_post` accepts a numeric post ID and the action `new_draft` to create a copy. |
+| EWWW Image Optimizer | `ewww_settings` (site) manages optimization, resizing, WebP, and lazy loading. `ewww_attachment` accepts a numeric image attachment ID and the action optimize. |
+| Yoast SEO | `yoast_settings`, `yoast_post`, and `yoast_term` manage supported settings and metadata. Read `yoast_ability` without an identifier to list registered abilities, then read a named ability to get its input schema. Execute read-only abilities with `query.input` and write abilities with `body.input`. |
+| Feedback Widget for Snootl | `snootl_widget` (site) manages widget visibility, minimum role, dashboard display, and the write-only API key. |
+| SyncPort — Migration & Sync | `syncport_settings` (site) manages push and pull permissions. `syncport_connections` lists, updates, and deletes named connections. `syncport_operations` reads migration history. |
+| justDev Support | `justdev_support` (site) manages the settings page, including content locking and environment notices, for users allowed by the plugin. |
+| Lomnio API Connector | Read `lomnio` without an identifier to list sections. Update pages, endpoints, or credentials. Credentials accept one `api_token` or `webhook_secret` at a time, with `null` to clear it. Update sync with target set to project, units, floors, or all. Read project, units, floors, or logs for locally stored data. Unit and floor lists support `query.offset` and `query.limit`. |
+
+SyncPort migration execution, Media Cloud bulk jobs, and WPML automatic translation jobs require the respective plugin workflows.
 
 ## ACF
 
@@ -193,7 +255,7 @@ Yoast’s public REST API presents SEO metadata. To save data, the connector use
 
 ## Change History
 
-Open **Tools → MCP Connector** or use **Change history** on the plugin row. The history records the UTC time, environment, WordPress user, Application Password UUID, operation, target, outcome, and available before/after differences for MCP writes. Known sensitive fields and uploaded binary data are omitted. Long values are shortened. `pending` indicates that the operation started but its outcome could not be recorded.
+Open **Tools → MCP Connector** to view the change history. The history records the UTC time, environment, WordPress user, Application Password UUID, operation, target, outcome, and available before/after differences for MCP writes. Known sensitive fields and uploaded binary data are omitted. ACF Options Page password and credential fields are write-only for administrators. Long values are shortened. `pending` indicates that the operation started but its outcome could not be recorded.
 
 ## Scope
 

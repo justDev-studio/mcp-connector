@@ -22,6 +22,7 @@ function tool_catalog() {
 				'route'  => $string,
 				'method' => array( 'type' => 'string', 'enum' => array( 'GET', 'OPTIONS' ) ),
 				'query'  => $object,
+				'language' => $string,
 			),
 			array( 'route' ),
 			true,
@@ -60,13 +61,13 @@ function tool_catalog() {
 			false,
 		),
 		'wordpress_admin_read' => array(
-			'Read native admin resources. Use wordpress_site_info for available resources. Omit identifier to list ACF definitions, options pages, theme settings or Yoast groups.',
-			array( 'resource' => array( 'type' => 'string', 'enum' => array_keys( admin_resources() ) ), 'identifier' => $string ),
+			'Read native admin and plugin resources. Use wordpress_site_info for available resources. Pass query.input to run a read-only Yoast ability.',
+			array( 'resource' => array( 'type' => 'string', 'enum' => array_keys( admin_resources() ) ), 'identifier' => $string, 'query' => $object ),
 			array( 'resource' ),
 			true,
 		),
 		'wordpress_admin_write' => array(
-			'Update WordPress permalink or visibility settings, ACF definitions or options pages, theme settings, configured site options or Yoast SEO. Use wordpress_admin_read before writing. delete is supported for ACF definitions, theme mods and configured site options.',
+			'Update a native WordPress or plugin resource. Use wordpress_admin_read to inspect it before writing. Deletion is supported for ACF definitions, theme mods, configured site options and SyncPort connections.',
 			array(
 				'resource'   => array( 'type' => 'string', 'enum' => array_keys( admin_resources() ) ),
 				'identifier' => $string,
@@ -124,18 +125,38 @@ function rest_collections() {
 
 	$objects = array_merge( array_values( get_post_types( array( 'show_in_rest' => true ), 'objects' ) ), array_values( get_taxonomies( array( 'show_in_rest' => true ), 'objects' ) ) );
 	$routes  = rest_get_server()->get_routes();
+	$administrator = mcp_is_administrator();
 	if ( isset( $routes['/gf/v2/forms'] ) ) {
 		$collections['/gf/v2/forms'] = 'gf_forms';
 	}
 	if ( isset( $routes['/gf/v2/entries'] ) ) {
 		$collections['/gf/v2/entries'] = 'gf_entries';
 	}
+	$reserved = $collections;
+	if ( ! $administrator ) {
+		$collections = array_intersect_key( $collections, array_flip( content_rest_collections() ), $routes );
+	}
 	foreach ( $objects as $object ) {
 		$base  = $object->rest_base ?: $object->name;
 		$route = '/' . ( $object->rest_namespace ?: 'wp/v2' ) . '/' . $base;
-		if ( 0 !== strpos( $route, '/' . REST_NAMESPACE . '/' ) && ! isset( $collections[ $route ] ) && isset( $routes[ $route ] ) ) {
-			$collections[ $route ] = 'numeric';
+		if ( 0 === strpos( $route, '/' . REST_NAMESPACE . '/' ) || isset( $reserved[ $route ] ) ||
+			isset( $collections[ $route ] ) || ! isset( $routes[ $route ] ) ) {
+			continue;
 		}
+		if ( ! $administrator ) {
+			if ( ! is_content_type( $object ) ) {
+				continue;
+			}
+			$controller = $object->get_rest_controller();
+			if ( ! $controller instanceof \WP_REST_Posts_Controller && ! $controller instanceof \WP_REST_Terms_Controller ) {
+				continue;
+			}
+		}
+		$collections[ $route ] = 'numeric';
+	}
+
+	if ( ! $administrator ) {
+		return $collections;
 	}
 
 	foreach ( (array) ( defined( 'WP_MCP_EXTRA_REST_ROUTES' ) ? WP_MCP_EXTRA_REST_ROUTES : array() ) as $route ) {
@@ -193,6 +214,9 @@ function resolve_route( $route ) {
 }
 
 function call_tool( $name, $arguments ) {
+	if ( ! mcp_is_administrator() && ! in_array( $name, content_mcp_tools(), true ) ) {
+		return new \WP_Error( 'mcp_admin_required', 'This MCP tool requires a WordPress administrator.' );
+	}
 	$schema = tool_catalog()[ $name ]['inputSchema'];
 	$args   = (array) $arguments;
 	foreach ( $schema['required'] as $key ) {
@@ -265,7 +289,10 @@ function call_tool( $name, $arguments ) {
 				$data['search'] = rawurlencode( wp_json_encode( $data['search'] ) );
 			}
 		}
-		return rest_result( dispatch_rest( $method, $route, $data ) );
+		$fetch = static function () use ( $method, $route, $data ) {
+			return rest_result( dispatch_rest( $method, $route, $data ) );
+		};
+		return isset( $args['language'] ) ? wpml_in_language( $args['language'], $fetch ) : $fetch();
 	}
 	if ( 'gf_entries' === $kind ) {
 		return new \WP_Error( 'mcp_method_denied', 'Gravity Forms entries support reading through wordpress_read.' );

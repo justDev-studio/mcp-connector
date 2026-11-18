@@ -21,7 +21,20 @@ function admin_resources() {
 		'yoast_settings'           => 'yoast_settings_resource',
 		'yoast_post'               => 'yoast_object_resource',
 		'yoast_term'               => 'yoast_object_resource',
-	);
+		'yoast_ability'            => 'yoast_ability_resource',
+		'wpml_languages'           => 'wpml_languages_resource',
+		'wpml_content'             => 'wpml_content_resource',
+		'wpml_strings'             => 'wpml_strings_resource',
+		'complianz'                => 'complianz_settings_resource',
+		'complianz_banner'         => 'complianz_banner_resource',
+		'duplicate_post_settings'  => 'duplicate_post_settings_resource',
+		'duplicate_post'           => 'duplicate_post_resource',
+		'ewww_attachment'          => 'ewww_attachment_resource',
+		'snootl_widget'            => 'snootl_settings_resource',
+		'syncport_connections'     => 'syncport_connections_resource',
+		'syncport_operations'      => 'syncport_operations_resource',
+		'lomnio'                   => 'lomnio_resource',
+	) + array_fill_keys( array_keys( plugin_settings_specs() ), 'plugin_settings_resource' );
 }
 
 function available_admin_resources() {
@@ -39,8 +52,38 @@ function available_admin_resources() {
 	}
 	if ( class_exists( '\WPSEO_Options' ) ) {
 		$resources = array_merge( $resources, array( 'yoast_settings', 'yoast_post', 'yoast_term' ) );
+		if ( function_exists( 'wp_get_abilities' ) ) {
+			$resources[] = 'yoast_ability';
+		}
 	}
-	return $resources;
+	if ( wpml_available() ) {
+		$resources = array_merge( $resources, array( 'wpml_languages', 'wpml_content' ) );
+		if ( function_exists( 'icl_get_string_by_id' ) ) {
+			$resources[] = 'wpml_strings';
+		}
+	}
+	foreach ( plugin_settings_specs() as $resource => $spec ) {
+		if ( plugin_settings_available( $spec ) ) {
+			$resources[] = $resource;
+		}
+	}
+	$plugins = array(
+		'complianz' => array( 'function_exists', 'cmplz_user_can_manage' ),
+		'complianz_banner' => array( 'function_exists', 'cmplz_get_cookiebanners' ),
+		'duplicate_post_settings' => array( 'class_exists', '\Yoast\WP\Duplicate_Post\Admin\Options' ),
+		'duplicate_post' => array( 'defined', 'DUPLICATE_POST_PATH' ),
+		'ewww_attachment' => array( 'function_exists', 'ewww_image_optimizer_optimize_by_id' ),
+		'snootl_widget' => array( 'class_exists', '\Snootl\Admin\Settings' ),
+		'syncport_connections' => array( 'class_exists', '\JustDev\SyncPort\Infrastructure\ConnectionRepository' ),
+		'syncport_operations' => array( 'class_exists', '\JustDev\SyncPort\Infrastructure\OperationRepository' ),
+		'lomnio' => array( 'class_exists', '\LomnioApiConnector\Pages\PageSettings' ),
+	);
+	foreach ( $plugins as $resource => list( $check, $symbol ) ) {
+		if ( $check( $symbol ) ) {
+			$resources[] = $resource;
+		}
+	}
+	return mcp_is_administrator() ? $resources : array_values( array_intersect( $resources, content_admin_resources() ) );
 }
 
 function admin_error( $message, $code = 'mcp_admin_invalid' ) {
@@ -49,6 +92,9 @@ function admin_error( $message, $code = 'mcp_admin_invalid' ) {
 
 function call_admin_tool( $name, array $args ) {
 	$resource   = $args['resource'];
+	if ( ! mcp_is_administrator() && ! in_array( $resource, content_admin_resources(), true ) ) {
+		return admin_error( 'This MCP resource requires a WordPress administrator.', 'mcp_admin_required' );
+	}
 	$identifier = $args['identifier'] ?? '';
 	$handler    = __NAMESPACE__ . '\\' . admin_resources()[ $resource ];
 	$snapshot   = static function () use ( $handler, $resource, $identifier ) {
@@ -56,14 +102,15 @@ function call_admin_tool( $name, array $args ) {
 	};
 
 	if ( 'wordpress_admin_read' === $name ) {
-		return $snapshot();
+		$query = isset( $args['query'] ) ? json_decode( wp_json_encode( $args['query'] ), true ) : array();
+		return $handler( $resource, $identifier, 'read', $query );
 	}
 	if ( '' === $identifier || strlen( $identifier ) > 190 || preg_match( '/[\x00-\x1f]/', $identifier ) ) {
 		return admin_error( 'Supply a valid resource identifier.' );
 	}
 	$operation = $args['operation'];
 	$body      = isset( $args['body'] ) ? json_decode( wp_json_encode( $args['body'] ), true ) : array();
-	if ( 'delete' === $operation && ! in_array( $resource, array_merge( array_keys( acf_definition_types() ), array( 'theme_mod', 'site_option' ) ), true ) ) {
+	if ( 'delete' === $operation && ! in_array( $resource, array_merge( array_keys( acf_definition_types() ), array( 'theme_mod', 'site_option', 'syncport_connections' ) ), true ) ) {
 		return admin_error( 'This resource does not support deletion.' );
 	}
 	if ( 'update' === $operation && ! $body ) {
@@ -83,7 +130,12 @@ function call_admin_tool( $name, array $args ) {
 		static function () use ( $handler, $resource, $identifier, $operation, $body ) {
 			return $handler( $resource, $identifier, $operation, $body );
 		},
-		static function () use ( $snapshot ) {
+		static function ( $result ) use ( $resource, $snapshot ) {
+			if ( 'duplicate_post' === $resource && isset( $result['draft_id'] ) ) {
+				return static function () use ( $result ) {
+					return $result;
+				};
+			}
 			return $snapshot;
 		}
 	);

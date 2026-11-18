@@ -62,13 +62,23 @@ function audit_snapshot( $source ) {
 	return $data;
 }
 
+function credential_key( $key ) {
+	return preg_match( '/password|secret|token|nonce|credential|(?:api|access|private|signing|client|license).?key|authorization|oauth|session.?cookie/i', $key );
+}
+
 function audit_sensitive_key( $key ) {
-	return preg_match( '/password|secret|token|nonce|credential|api.?key|authorization|oauth|cookie|hash|email|^meta$|^base64$/i', $key );
+	return credential_key( $key ) || preg_match( '/cookie|hash|email|^meta$|^base64$/i', $key );
 }
 
 function audit_safe_value( $value, $key = '', $depth = 0 ) {
 	if ( audit_sensitive_key( $key ) ) {
 		return '[redacted]';
+	}
+	if ( 0 === strpos( $key, 'field_' ) && function_exists( 'acf_get_field' ) ) {
+		$field = acf_get_field( $key );
+		if ( $field && ( 'password' === ( $field['type'] ?? '' ) || audit_sensitive_key( $field['name'] ?? '' ) ) ) {
+			return '[redacted]';
+		}
 	}
 	if ( is_string( $value ) && strlen( $value ) > 1200 ) {
 		return substr( $value, 0, 1200 ) . ' [truncated]';
@@ -81,7 +91,8 @@ function audit_safe_value( $value, $key = '', $depth = 0 ) {
 	}
 	$data = array();
 	$properties = (array) $value;
-	$sensitive_field = is_string( $properties['name'] ?? null ) && audit_sensitive_key( $properties['name'] );
+	$sensitive_field = 'password' === ( $properties['type'] ?? '' ) ||
+		( is_string( $properties['name'] ?? null ) && audit_sensitive_key( $properties['name'] ) );
 	foreach ( array_slice( (array) $value, 0, 20, true ) as $child_key => $child ) {
 		$data[ $child_key ] = $sensitive_field && in_array( $child_key, array( 'value', 'default_value' ), true ) ?
 			'[redacted]' : audit_safe_value( $child, (string) $child_key, $depth + 1 );
@@ -188,6 +199,9 @@ function audit_mutation( $tool, $target, array $input, $before_route, callable $
 }
 
 function register_audit_page() {
+	if ( ! mcp_is_administrator() ) {
+		return;
+	}
 	add_management_page(
 		'MCP Connector',
 		'MCP Connector',
@@ -198,10 +212,11 @@ function register_audit_page() {
 }
 
 function plugin_action_links( array $links ) {
-	if ( current_user_can( 'manage_options' ) ) {
+	if ( mcp_is_administrator() && current_user_can( 'manage_options' ) ) {
+		$label = 'development' === wp_get_environment_type() ? __( 'Settings', 'mcp-connector' ) : __( 'Change history', 'mcp-connector' );
 		array_unshift(
 			$links,
-			'<a href="' . esc_url( admin_url( 'tools.php?page=mcp-connector' ) ) . '">' . esc_html__( 'Change history', 'mcp-connector' ) . '</a>'
+			'<a href="' . esc_url( admin_url( 'tools.php?page=mcp-connector' ) ) . '">' . esc_html( $label ) . '</a>'
 		);
 	}
 	return $links;
@@ -210,8 +225,8 @@ function plugin_action_links( array $links ) {
 function render_audit_page() {
 	global $wpdb;
 
-	if ( ! current_user_can( 'manage_options' ) ) {
-		wp_die( esc_html__( 'You are not allowed to access this page.', 'mcp-connector' ) );
+	if ( ! mcp_is_administrator() || ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'You are not allowed to access this page.', 'mcp-connector' ), '', array( 'response' => 403 ) );
 	}
 
 	$table = audit_table();
@@ -232,6 +247,8 @@ function render_audit_page() {
 		<p><strong><?php esc_html_e( 'Environment', 'mcp-connector' ); ?></strong> <?php echo esc_html( wp_get_environment_type() ); ?></p>
 		<h2><?php esc_html_e( 'MCP endpoint', 'mcp-connector' ); ?></h2>
 		<pre><?php echo esc_html( rest_url( REST_NAMESPACE . '/mcp' ) ); ?></pre>
+		<?php render_mcp_credential_form(); ?>
+		<?php render_project_setup(); ?>
 		<h2><?php esc_html_e( 'Change history', 'mcp-connector' ); ?></h2>
 		<table class="widefat striped">
 			<thead><tr>

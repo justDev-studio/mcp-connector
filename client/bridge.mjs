@@ -1,9 +1,11 @@
-import { open, readFile, realpath, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 
 const maxMediaBytes = 8 * 1024 * 1024;
+const projectProfileGuard = '<?php exit; __halt_compiler();\n';
 const environments = ['local', 'development', 'staging', 'production'];
 const mimeTypes = {
     '.avif': 'image/avif',
@@ -21,12 +23,18 @@ async function loadProfile() {
     const path = process.env.WP_MCP_CONFIG || join(homedir(), '.config', 'wp-mcp', 'profiles.json');
     const file = await open(path, 'r');
     let config;
+    let profileFile;
     try {
-        const info = await file.stat();
-        if (!info.isFile() || (process.platform !== 'win32' && (info.mode & 0o077))) {
+        profileFile = await file.stat();
+        if (!profileFile.isFile() || (process.platform !== 'win32' && (profileFile.mode & 0o077))) {
             throw new Error('The profiles file must be private (chmod 600).');
         }
-        config = JSON.parse(await file.readFile('utf8'));
+        const contents = await file.readFile('utf8');
+        if (path.endsWith('.php') && !contents.startsWith(projectProfileGuard)) {
+            throw new Error('The project profiles file has an invalid PHP guard.');
+        }
+        const payload = contents.startsWith(projectProfileGuard) ? contents.slice(projectProfileGuard.length) : contents;
+        config = JSON.parse(payload);
     } finally {
         await file.close();
     }
@@ -57,7 +65,7 @@ async function loadProfile() {
         throw new Error('Use an HTTPS endpoint, or loopback HTTP for the local environment.');
     }
 
-    return { ...profile, url };
+    return { ...profile, url, profileFile };
 }
 
 async function prepareUpload(args, profile) {
@@ -73,9 +81,8 @@ async function prepareUpload(args, profile) {
     if (!location || location === '..' || location.startsWith('..' + sep) || isAbsolute(location)) {
         throw new Error('The file must be inside the configured mediaDirectory.');
     }
-    const info = await stat(filePath);
-    if (!info.isFile() || !info.size || info.size > maxMediaBytes) {
-        throw new Error('The upload must be a nonempty regular file of at most 8 MiB.');
+    if (filePath.split(sep).includes('.wp-mcp')) {
+        throw new Error('MCP profile files cannot be uploaded.');
     }
 
     const { file_path, ...upload } = args;
@@ -84,7 +91,24 @@ async function prepareUpload(args, profile) {
     if (!upload.mime_type) {
         throw new Error('Please provide the MIME type for this file extension.');
     }
-    upload.base64 = (await readFile(filePath)).toString('base64');
+    const file = await open(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    try {
+        const info = await file.stat();
+        if (info.dev === profile.profileFile.dev && info.ino === profile.profileFile.ino) {
+            throw new Error('MCP profile files cannot be uploaded.');
+        }
+        if (!info.isFile() || !info.size || info.size > maxMediaBytes) {
+            throw new Error('The upload must be a nonempty regular file of at most 8 MiB.');
+        }
+        const bytes = Buffer.alloc(info.size);
+        const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+        if (bytesRead !== bytes.length || filePath !== await realpath(filePath)) {
+            throw new Error('The selected file changed during the upload.');
+        }
+        upload.base64 = bytes.toString('base64');
+    } finally {
+        await file.close();
+    }
     return upload;
 }
 

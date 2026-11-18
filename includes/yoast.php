@@ -66,6 +66,9 @@ function yoast_object_resource( $resource, $identifier, $operation, array $body 
 	if ( ! current_user_can( $is_post ? 'edit_post' : 'edit_term', $id ) ) {
 		return admin_error( 'You are not allowed to edit this object.', 'mcp_admin_forbidden' );
 	}
+	if ( ! mcp_is_administrator() && ! is_content_type( $is_post ? get_post_type_object( $object->post_type ) : get_taxonomy( $object->taxonomy ) ) ) {
+		return admin_error( 'This object type is outside the MCP content scope.', 'mcp_admin_forbidden' );
+	}
 
 	$metadata = array();
 	if ( $is_post ) {
