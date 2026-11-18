@@ -17,6 +17,7 @@ function admin_resources() {
 		'theme_mod'                => 'theme_mod_resource',
 		'global_styles'            => 'global_styles_resource',
 		'site_option'              => 'site_option_resource',
+		'wordpress_settings'       => 'wordpress_settings_resource',
 		'yoast_settings'           => 'yoast_settings_resource',
 		'yoast_post'               => 'yoast_object_resource',
 		'yoast_term'               => 'yoast_object_resource',
@@ -24,7 +25,7 @@ function admin_resources() {
 }
 
 function available_admin_resources() {
-	$resources = array( 'customizer', 'theme_mod', 'site_option' );
+	$resources = array( 'customizer', 'theme_mod', 'site_option', 'wordpress_settings' );
 	if ( wp_theme_has_theme_json() ) {
 		$resources[] = 'global_styles';
 	}
@@ -204,6 +205,52 @@ function global_styles_resource( $resource, $identifier, $operation, array $body
 		return array( 'stylesheet' => get_stylesheet(), 'settings' => array(), 'styles' => array() );
 	}
 	return rest_result( dispatch_rest( 'GET', '/wp/v2/global-styles/' . $stored['ID'], array( 'context' => 'edit' ) ) );
+}
+
+function wordpress_settings_resource( $resource, $identifier, $operation, array $body ) {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		return admin_error( 'You are not allowed to manage WordPress settings.', 'mcp_admin_forbidden' );
+	}
+	if ( '' !== $identifier && 'site' !== $identifier ) {
+		return admin_error( 'Use site to manage WordPress permalink and search visibility settings.' );
+	}
+
+	$rewrite_options = array(
+		'permalink_structure' => 'set_permalink_structure',
+		'category_base'        => 'set_category_base',
+		'tag_base'             => 'set_tag_base',
+	);
+	$settings = array( 'blog_public' => (bool) get_option( 'blog_public' ) );
+	foreach ( $rewrite_options as $key => $setter ) {
+		$settings[ $key ] = (string) get_option( $key );
+	}
+	if ( 'read' === $operation ) {
+		return $settings;
+	}
+
+	if ( array_diff_key( $body, $settings ) || ( array_key_exists( 'blog_public', $body ) && ! is_bool( $body['blog_public'] ) ) ) {
+		return admin_error( 'Supply permalink settings or a boolean blog_public value.' );
+	}
+	$rewrites = array_intersect_key( $body, $rewrite_options );
+	foreach ( $rewrites as $key => $value ) {
+		if ( ! is_string( $value ) || preg_match( '~[?#\x00-\x1f]|://~', $value ) ) {
+			return admin_error( 'Supply a relative permalink pattern or base for ' . $key . '.' );
+		}
+		$path = '' === $value ? '' : preg_replace( '~/+~', '/', '/' . $value );
+		$rewrites[ $key ] = sanitize_option( $key, $path );
+	}
+
+	global $wp_rewrite;
+	foreach ( $rewrites as $key => $value ) {
+		$wp_rewrite->{$rewrite_options[ $key ]}( $value );
+	}
+	if ( $rewrites ) {
+		flush_rewrite_rules( false );
+	}
+	if ( array_key_exists( 'blog_public', $body ) ) {
+		update_option( 'blog_public', (int) $body['blog_public'] );
+	}
+	return wordpress_settings_resource( $resource, $identifier, 'read', array() );
 }
 
 function site_option_resource( $resource, $identifier, $operation, array $body ) {

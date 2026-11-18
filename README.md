@@ -101,7 +101,7 @@ The endpoint supports stateless Streamable HTTP. Use HTTP Basic authentication w
 | --- | --- |
 | `wordpress_site_info` | Inspect the site URL, user, environment, REST collections, and available native admin resources. |
 | `wordpress_read` | Read WordPress REST collections and items. Send `method: "OPTIONS"` to inspect the route schema. |
-| `wordpress_write` | Create, update, trash, or delete supported WordPress objects. Use the core REST `POST` and `DELETE` methods, including the route's normal arguments. |
+| `wordpress_write` | Create, update, trash, or delete supported WordPress objects. Use `POST` and `DELETE` for WordPress routes and `PUT` to update a Gravity Forms form. |
 | `wordpress_upload_media` | Upload either a `file_path` inside `mediaDirectory` or a `base64` payload with `filename` and `mime_type`. Maximum 8 MiB, subject to the site's smaller limits. |
 | `wordpress_update_plugin` | Apply an update found by WordPress. Uses the installed plugin identifier without `.php`, the user’s `update_plugins` capability, and direct filesystem access. |
 | `wordpress_activate_theme` | Activate an installed theme available to the site. |
@@ -109,6 +109,30 @@ The endpoint supports stateless Streamable HTTP. Use HTTP Basic authentication w
 | `wordpress_admin_write` | Update an admin resource or move a database-backed ACF definition to Trash. Only the documented resources support `delete`. |
 
 REST support includes posts, pages, media, comments, users, blocks, navigation, menus, widgets, sidebars, block templates, template parts, Global Styles, settings, themes, plugins, and REST-enabled custom post types and taxonomies. The native plugins REST controller installs plugins from WordPress.org and manages activation or deletion. Manage the connector itself from WordPress admin or the site’s deployment workflow.
+
+## WordPress Site Settings
+
+Use `wordpress_read` with `/wp/v2/settings` to read site-wide settings and `wordpress_write` with `POST` to update them. Use `OPTIONS` to discover the site's schema. The core endpoint covers settings such as the site title, tagline, timezone, date and time formats, front page, posts per page, and comment defaults.
+
+Use `wordpress_admin_read` or `wordpress_admin_write` with resource `wordpress_settings` and identifier `site` for `permalink_structure`, `category_base`, `tag_base`, and `blog_public`. Set `blog_public` to `false` to discourage search engines from indexing the site. Permalink updates refresh WordPress rewrite rules in the database.
+
+## Custom Post Records
+
+Use `wordpress_site_info` to find a post type's REST collection. WordPress exposes custom types that are registered with `show_in_rest`, including their configured REST namespace and base. For example, `wordpress_read` can list records at `/wp/v2/books` or fetch `/wp/v2/books/42`. Send `wordpress_write` with `POST` to the item route to update it. Fields registered in the REST schema can be updated in the same request.
+
+## Gravity Forms
+
+Gravity Forms routes appear when the plugin's REST API v2 is enabled in **Forms → Settings → REST API**. The connector uses the authenticated WordPress user's Gravity Forms capabilities.
+
+| Operation | Tool and route |
+| --- | --- |
+| List or read forms | `wordpress_read` with `/gf/v2/forms` or `/gf/v2/forms/{id}` |
+| Create a form | `wordpress_write` with `POST` to `/gf/v2/forms` and a Gravity Forms Form Object |
+| Update form settings, fields, notifications, or confirmations | `wordpress_write` with `PUT` to `/gf/v2/forms/{id}` |
+| List and filter submissions | `wordpress_read` with `/gf/v2/entries` or `/gf/v2/forms/{id}/entries` |
+| Read one submission | `wordpress_read` with `/gf/v2/entries/{id}` |
+
+Form updates merge the supplied top-level properties into the existing form. A supplied `fields`, `notifications`, or `confirmations` property replaces that section, so read the current form first and keep the existing entries and IDs you want to preserve. For submission lists, use `query.paging`, `query.sorting`, and `query.search`. For example, `{"paging":{"page_size":20,"current_page":1},"search":{"status":"active"}}` retrieves the first page of active submissions. Use `_field_ids` and `_labels` to select which fields to return.
 
 ## ACF
 

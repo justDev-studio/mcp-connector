@@ -17,7 +17,7 @@ function tool_catalog() {
 			true,
 		),
 		'wordpress_read' => array(
-			'Read a WordPress REST collection or item. Use site_info for routes. Use query for search, per_page, page, context and _fields. Use OPTIONS to discover the route schema.',
+			'Read WordPress content, site settings or Gravity Forms forms and entries. Use site_info for routes and OPTIONS for the route schema.',
 			array(
 				'route'  => $string,
 				'method' => array( 'type' => 'string', 'enum' => array( 'GET', 'OPTIONS' ) ),
@@ -27,10 +27,10 @@ function tool_catalog() {
 			true,
 		),
 		'wordpress_write' => array(
-			'Create, update, trash or delete WordPress objects through core REST routes. Use POST to create or update, DELETE to trash, and body.force=true to permanently delete where required. Install plugins by posting a WordPress.org slug to /wp/v2/plugins. Change activation via status on an item route.',
+			'Create, update, trash or delete WordPress objects. Use POST for WordPress updates and Gravity Forms creation, PUT for Gravity Forms form updates, and DELETE to trash supported WordPress objects.',
 			array(
 				'route'  => $string,
-				'method' => array( 'type' => 'string', 'enum' => array( 'POST', 'DELETE' ) ),
+				'method' => array( 'type' => 'string', 'enum' => array( 'POST', 'PUT', 'DELETE' ) ),
 				'body'   => $object,
 			),
 			array( 'route', 'method' ),
@@ -66,7 +66,7 @@ function tool_catalog() {
 			true,
 		),
 		'wordpress_admin_write' => array(
-			'Update an ACF definition or options page, Customizer setting, theme mod, Global Styles, configured site option, or Yoast settings/metadata. Use wordpress_admin_read before writing. delete is supported for ACF definitions, theme mods and configured site options.',
+			'Update WordPress permalink or visibility settings, ACF definitions or options pages, theme settings, configured site options or Yoast SEO. Use wordpress_admin_read before writing. delete is supported for ACF definitions, theme mods and configured site options.',
 			array(
 				'resource'   => array( 'type' => 'string', 'enum' => array_keys( admin_resources() ) ),
 				'identifier' => $string,
@@ -124,6 +124,12 @@ function rest_collections() {
 
 	$objects = array_merge( array_values( get_post_types( array( 'show_in_rest' => true ), 'objects' ) ), array_values( get_taxonomies( array( 'show_in_rest' => true ), 'objects' ) ) );
 	$routes  = rest_get_server()->get_routes();
+	if ( isset( $routes['/gf/v2/forms'] ) ) {
+		$collections['/gf/v2/forms'] = 'gf_forms';
+	}
+	if ( isset( $routes['/gf/v2/entries'] ) ) {
+		$collections['/gf/v2/entries'] = 'gf_entries';
+	}
 	foreach ( $objects as $object ) {
 		$base  = $object->rest_base ?: $object->name;
 		$route = '/' . ( $object->rest_namespace ?: 'wp/v2' ) . '/' . $base;
@@ -160,6 +166,12 @@ function resolve_route( $route ) {
 	if ( isset( $collections[ $route ] ) ) {
 		return array( $route, $collections[ $route ], '' );
 	}
+	if (
+		isset( $collections['/gf/v2/entries'], $collections['/gf/v2/forms'] ) &&
+		preg_match( '~^/gf/v2/forms/[1-9][0-9]*/entries$~D', $route )
+	) {
+		return array( $route, 'gf_entries', '' );
+	}
 
 	foreach ( $collections as $base => $kind ) {
 		if ( 0 !== strpos( $route, $base . '/' ) ) {
@@ -167,7 +179,7 @@ function resolve_route( $route ) {
 		}
 		$id = substr( $route, strlen( $base ) + 1 );
 		if (
-			( 'numeric' === $kind && preg_match( '/^[1-9][0-9]*$/D', $id ) ) ||
+			( in_array( $kind, array( 'numeric', 'gf_forms', 'gf_entries' ), true ) && preg_match( '/^[1-9][0-9]*$/D', $id ) ) ||
 			( 'plugins' === $kind && plugin_identifier( $id ) ) ||
 			( 'themes' === $kind && preg_match( '~^[a-z0-9_-]+(?:/[a-z0-9_-]+)?$~iD', $id ) ) ||
 			( 'named' === $kind && preg_match( '/^[a-z0-9_-]+$/iD', $id ) ) ||
@@ -231,14 +243,45 @@ function call_tool( $name, $arguments ) {
 	$method = $read ? ( $args['method'] ?? 'GET' ) : $args['method'];
 	$data   = (array) ( $args[ $read ? 'query' : 'body' ] ?? array() );
 	$forbidden = array( 'id', 'plugin', 'stylesheet', 'rest_route' );
+	$query_keys = array( '_fields' );
+	if ( 'gf_entries' === $kind ) {
+		$forbidden = array_merge( $forbidden, array( 'form_id', 'entry_id' ) );
+		$query_keys = array_merge( $query_keys, array( '_field_ids', '_labels' ) );
+	}
 	foreach ( array_keys( $data ) as $key ) {
-		if ( in_array( $key, $forbidden, true ) || ( 0 === strpos( (string) $key, '_' ) && ! ( $read && '_fields' === $key ) ) ) {
+		if ( in_array( $key, $forbidden, true ) || ( 0 === strpos( (string) $key, '_' ) && ! ( $read && in_array( $key, $query_keys, true ) ) ) ) {
 			return new \WP_Error( 'mcp_invalid_parameter', 'Reserved REST parameter: ' . $key );
 		}
 	}
 
 	if ( $read ) {
+		if ( 'gf_entries' === $kind ) {
+			foreach ( array( 'paging', 'sorting' ) as $key ) {
+				if ( is_object( $data[ $key ] ?? null ) ) {
+					$data[ $key ] = (array) $data[ $key ];
+				}
+			}
+			if ( is_object( $data['search'] ?? null ) ) {
+				$data['search'] = rawurlencode( wp_json_encode( $data['search'] ) );
+			}
+		}
 		return rest_result( dispatch_rest( $method, $route, $data ) );
+	}
+	if ( 'gf_entries' === $kind ) {
+		return new \WP_Error( 'mcp_method_denied', 'Gravity Forms entries support reading through wordpress_read.' );
+	}
+	if ( 'PUT' === $method && 'gf_forms' !== $kind ) {
+		return new \WP_Error( 'mcp_method_denied', 'Use PUT for Gravity Forms form updates and POST for WordPress updates.' );
+	}
+	if ( 'gf_forms' === $kind && ( $method !== ( '' === $id ? 'POST' : 'PUT' ) || ! $data ) ) {
+		return new \WP_Error( 'mcp_method_denied', 'Supply form properties with POST on the Gravity Forms collection or PUT on a form item.' );
+	}
+	if ( 'gf_forms' === $kind ) {
+		foreach ( array_intersect_key( $data, array( 'fields' => true, 'notifications' => true, 'confirmations' => true ) ) as $key => $value ) {
+			if ( ! is_array( $value ) && ( 'fields' === $key || ! is_object( $value ) ) ) {
+				return new \WP_Error( 'mcp_invalid_parameter', 'Supply a valid Gravity Forms section for ' . $key . '.' );
+			}
+		}
 	}
 	if ( 'themes' === $kind || ( 'DELETE' === $method && '' === $id ) || ( '/wp/v2/media' === $base && '' === $id ) ) {
 		return new \WP_Error( 'mcp_method_denied', 'Use an item route for deletion, wordpress_activate_theme for theme changes, and wordpress_upload_media to create media.' );
@@ -252,7 +295,15 @@ function call_tool( $name, $arguments ) {
 		$method . ' ' . $route,
 		$data,
 		'' !== $id || 'settings' === $kind ? $route : null,
-		static function () use ( $method, $route, $data ) {
+		static function () use ( $method, $route, $data, $kind ) {
+			if ( 'gf_forms' === $kind && 'PUT' === $method ) {
+				$current = rest_result( dispatch_rest( 'GET', $route ) );
+				if ( is_wp_error( $current ) ) {
+					return $current;
+				}
+				// Gravity Forms expects a complete form object for PUT.
+				$data = array_replace( $current, $data );
+			}
 			return rest_result( dispatch_rest( $method, $route, $data ) );
 		},
 		static function ( $result ) use ( $route, $base, $id, $kind ) {
