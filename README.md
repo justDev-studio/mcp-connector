@@ -41,7 +41,7 @@ composer config repositories.justdev-mcp-connector vcs https://github.com/justDe
    define( 'WP_ENVIRONMENT_TYPE', 'staging' );
    ```
 
-3. In **Tools → MCP Connector**, use **Development project setup** on a development site. In other environments, enter the WordPress username and select **Create MCP Application Password**, then copy the connection details into your private local profile. Use a separate profile for each environment.
+3. In **Tools → MCP Connector**, use **Development project setup** on a development site. In other environments, choose a WordPress user from the list and select **Create MCP Application Password**, then copy the connection details into your private local profile. The list defaults to the signed-in user when available. Use a separate profile for each environment.
 4. For remote staging or production, use the HTTPS endpoint from the profile and make sure it is reachable from the machine running the agent. The password inherits the WordPress user's permissions and works only on the MCP endpoint, while the connector is active.
 
 Each MCP request sends `X-WP-MCP-Environment`. WordPress responds with HTTP 409 when the header and environment differ. HTTP is accepted for `local` only on loopback. The MCP request body limit is 12 MiB, subject to smaller limits set by PHP or the web server.
@@ -60,7 +60,9 @@ Either setup button prepares `.wp-mcp/`, adds its wildcard `.gitignore` and an A
 
 Each button adds the server to the selected client's file. Both clients share a private profile in `.wp-mcp/`. Setup reuses an existing development profile for this site or issues a WordPress Application Password for the administrator running setup. Revoke passwords issued by MCP Connector before deactivating it. Passwords created directly in the standard WordPress user profile or by earlier versions without environment scoping retain their existing WordPress scope.
 
-Development setup writes `.wp-mcp/profiles.json` with private file permissions when the directory is outside the web root. For a directory inside the web root, block all HTTP access to `.wp-mcp/` at the web server and verify the denial before setting `WP_MCP_JSON_PROFILE_WEB_PROTECTED` to `true` in `wp-config.php` or `1` in the environment. Otherwise setup writes `.wp-mcp/profiles.php` with a PHP guard. Existing valid profiles are reused.
+Development setup writes `.wp-mcp/profiles.json` with private file permissions when the directory is outside the web root or a development site at its document root passes an HTTP protection check. The check requests a temporary file containing no credentials over HTTPS and HTTP. It accepts HTTPS denial and either HTTP denial or a redirect to the verified HTTPS URL. When setup cannot verify protection, it writes `.wp-mcp/profiles.php` with a PHP guard. Existing valid profiles are reused.
+
+For custom web-server layouts, verify that the server blocks HTTP access before setting `WP_MCP_JSON_PROFILE_WEB_PROTECTED` to `true` in `wp-config.php` or `1` in the environment. The project setup uses this setting as an explicit confirmation of protection.
 
 The root `.gitignore` rules cover `.codex/config.toml`, `.mcp.json`, and `.wp-mcp/`. Existing Git-tracked files remain tracked. Setup preserves existing server entries with the same name.
 

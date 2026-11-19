@@ -12,6 +12,7 @@ const PROJECT_JSON_PROFILE_FILE = '.wp-mcp/profiles.json';
 const PROJECT_IGNORE_RULE = '/.wp-mcp/';
 const PROJECT_PROFILE_IGNORE_FILE = '.wp-mcp/.gitignore';
 const PROJECT_PROFILE_ACCESS_FILE = '.wp-mcp/.htaccess';
+const PROJECT_PROFILE_PROTECTION_FILE = '.wp-mcp/.json-protection';
 const PROJECT_CODEX_CONFIG = '.codex/config.toml';
 const PROJECT_CLAUDE_CONFIG = '.mcp.json';
 const PROJECT_CLIENT_CONFIGS = array(
@@ -87,9 +88,71 @@ function project_setup_json_allowed( $root ) {
 	foreach ( array( ABSPATH, $_SERVER['DOCUMENT_ROOT'] ?? '' ) as $document_root ) {
 		$public = '' !== $document_root ? realpath( $document_root ) : false;
 		if ( $public && 0 === strpos( $path, trailingslashit( wp_normalize_path( $public ) ) ) ) {
-			return false;
+			$signature = project_setup_json_protection_signature( $root );
+			return $signature && $signature === project_setup_read( $root, PROJECT_PROFILE_PROTECTION_FILE );
 		}
 	}
+	return true;
+}
+
+function project_setup_json_protection_signature( $root ) {
+	$url = home_url( '/' . PROJECT_JSON_PROFILE_FILE );
+	$access = project_setup_read( $root, PROJECT_PROFILE_ACCESS_FILE );
+	if ( 'https' !== wp_parse_url( $url, PHP_URL_SCHEME ) || null === $access ) {
+		return null;
+	}
+	return hash( 'sha256', $url . "\n" . $access );
+}
+
+function project_setup_verify_json_protection( $root ) {
+	$document_root = realpath( $_SERVER['DOCUMENT_ROOT'] ?? ABSPATH );
+	if ( ! $document_root || $root !== untrailingslashit( wp_normalize_path( $document_root ) ) ||
+		! in_array( wp_parse_url( home_url( '/' ), PHP_URL_PATH ), array( '/', null ), true ) ) {
+		return false;
+	}
+
+	$signature = project_setup_json_protection_signature( $root );
+	if ( ! $signature ) {
+		return false;
+	}
+	// Only request a newly created placeholder. A real profile must never be used as a probe.
+	$path = project_setup_path( $root, PROJECT_JSON_PROFILE_FILE );
+	$probe = @fopen( $path, 'xb' );
+	if ( false === $probe ) {
+		return false;
+	}
+
+	try {
+		$sample = "{}\n";
+		$written = fwrite( $probe, $sample );
+		fclose( $probe );
+		if ( strlen( $sample ) !== $written ) {
+			return false;
+		}
+		$url = home_url( '/' . PROJECT_JSON_PROFILE_FILE );
+		$args = array(
+			'timeout'             => 3,
+			'redirection'         => 0,
+			'limit_response_size' => 256,
+			'headers'             => array( 'Cache-Control' => 'no-cache, no-store' ),
+		);
+		$result = wp_remote_get( $url, $args );
+		if ( 403 !== (int) wp_remote_retrieve_response_code( $result ) ) {
+			return false;
+		}
+		$result = wp_remote_get( set_url_scheme( $url, 'http' ), $args );
+		$status = (int) wp_remote_retrieve_response_code( $result );
+		if ( 403 !== $status && ( ! in_array( $status, array( 301, 302, 307, 308 ), true ) ||
+			$url !== wp_remote_retrieve_header( $result, 'location' ) ) ) {
+			return false;
+		}
+	} finally {
+		if ( ! @unlink( $path ) ) {
+			throw new \RuntimeException( 'Cannot remove the temporary JSON protection check file.' );
+		}
+	}
+
+	project_setup_write( $root, PROJECT_PROFILE_PROTECTION_FILE, $signature, 0600 );
 	return true;
 }
 
@@ -336,6 +399,10 @@ function project_setup_apply( $client ) {
 		$config = project_setup_client_plan( $root, $client, $plan );
 		project_setup_write_files( $root, $plan['preparation'] );
 		if ( ! $plan['profile'] ) {
+			if ( PROJECT_PHP_PROFILE_FILE === $plan['profile_path'] && project_setup_verify_json_protection( $root ) ) {
+				$plan = project_setup_plan( $root );
+				$config = project_setup_client_plan( $root, $client, $plan );
+			}
 			project_setup_create_profile( $root, $plan['endpoint'], $plan['profile_path'] );
 		}
 		if ( null !== $config['contents'] ) {

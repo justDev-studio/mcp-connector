@@ -37,15 +37,37 @@ function create_mcp_application_password( \WP_User $user, $name ) {
 	);
 }
 
+function mcp_can_issue_password_for_user( \WP_User $user ) {
+	return current_user_can( 'edit_user', $user->ID ) &&
+		( ! is_multisite() || is_user_member_of_blog( $user->ID ) || is_super_admin( $user->ID ) );
+}
+
 function render_mcp_credential_form() {
+	$current = wp_get_current_user();
+	$users   = array( $current->ID => $current );
+	foreach ( get_users( array( 'orderby' => 'login' ) ) as $user ) {
+		$users[ $user->ID ] = $user;
+	}
+	$users = array_filter( $users, static function ( \WP_User $user ) {
+		return mcp_can_issue_password_for_user( $user ) && wp_is_application_passwords_available_for_user( $user );
+	} );
 	?>
 	<h2><?php esc_html_e( 'MCP Application Password', 'mcp-connector' ); ?></h2>
+	<?php if ( ! $users ) : ?>
+		<p><?php esc_html_e( 'No editable users can create an Application Password on this site.', 'mcp-connector' ); ?></p>
+		<?php return; ?>
+	<?php endif; ?>
 	<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 		<input type="hidden" name="action" value="mcp_connector_create_credential">
 		<?php wp_nonce_field( 'mcp_connector_create_credential' ); ?>
 		<p>
-			<label for="mcp-credential-user"><?php esc_html_e( 'WordPress username', 'mcp-connector' ); ?></label>
-			<input type="text" class="regular-text" id="mcp-credential-user" name="mcp_credential_user" value="<?php echo esc_attr( wp_get_current_user()->user_login ); ?>" required>
+			<label for="mcp-credential-user"><?php esc_html_e( 'WordPress user', 'mcp-connector' ); ?></label>
+			<select id="mcp-credential-user" name="mcp_credential_user" required>
+				<option value="" disabled <?php selected( ! isset( $users[ $current->ID ] ) ); ?>><?php esc_html_e( 'Select a user', 'mcp-connector' ); ?></option>
+				<?php foreach ( $users as $user ) : ?>
+					<option value="<?php echo esc_attr( $user->ID ); ?>" <?php selected( $user->ID, $current->ID ); ?>><?php echo esc_html( $user->user_login ); ?></option>
+				<?php endforeach; ?>
+			</select>
 		</p>
 		<?php submit_button( __( 'Create MCP Application Password', 'mcp-connector' ), 'secondary' ); ?>
 	</form>
@@ -61,10 +83,10 @@ function handle_mcp_create_credential() {
 	}
 	check_admin_referer( 'mcp_connector_create_credential' );
 
-	$username = $_POST['mcp_credential_user'] ?? '';
-	$user = is_string( $username ) ? get_user_by( 'login', trim( wp_unslash( $username ) ) ) : false;
-	if ( ! $user || ! current_user_can( 'edit_user', $user->ID ) ||
-		( is_multisite() && ! is_user_member_of_blog( $user->ID ) && ! is_super_admin( $user->ID ) ) ) {
+	$selection = $_POST['mcp_credential_user'] ?? '';
+	$user_id   = is_string( $selection ) ? filter_var( $selection, FILTER_VALIDATE_INT, array( 'options' => array( 'min_range' => 1 ) ) ) : false;
+	$user      = $user_id ? get_user_by( 'id', $user_id ) : false;
+	if ( ! $user || ! mcp_can_issue_password_for_user( $user ) ) {
 		wp_die( esc_html__( 'Select a WordPress user you can edit on this site.', 'mcp-connector' ), '', array( 'response' => 403, 'back_link' => true ) );
 	}
 
