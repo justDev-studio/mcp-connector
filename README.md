@@ -41,7 +41,7 @@ composer config repositories.justdev-mcp-connector vcs https://github.com/justDe
    define( 'WP_ENVIRONMENT_TYPE', 'staging' );
    ```
 
-3. In **Tools → MCP Connector**, use **Development project setup** on a development site. In other environments, choose a WordPress user from the list and select **Create MCP Application Password**, then copy the connection details into your private local profile. The list defaults to the signed-in user when available. Use a separate profile for each environment.
+3. In **Tools → MCP Connector**, use **Development project setup** on a development site. In other environments, choose a WordPress user from the list and select **Create MCP Application Password**. Paste the displayed entry inside the `profiles` object in your private local configuration. If the entry already exists, update its connection fields. The list defaults to the signed-in user when available.
 4. For remote staging or production, use the HTTPS endpoint from the profile and make sure it is reachable from the machine running the agent. The password inherits the WordPress user's permissions and works only on the MCP endpoint, while the connector is active.
 
 Each MCP request sends `X-WP-MCP-Environment`. WordPress responds with HTTP 409 when the header and environment differ. HTTP is accepted for `local` only on loopback. The MCP request body limit is 12 MiB, subject to smaller limits set by PHP or the web server.
